@@ -1,0 +1,19 @@
+assistant_server: Ansible + other tools
+database_server: postgresql
+map_program_server: map program
+nginx_server: nginx
+
+Step 1: use shell script set up assistant_server
+scripts: ansible.sh
+
+Step 2: use Ansible in assistant_server set up a database_server and record its IP
+scripts: database.sh(1), assistant.sh, database.sh(2)
+
+Step 3: use Ansible in assistant_server set up two map_program_server with database_server's IP and record the IPs of those two map_program_server
+scripts: map_server.sh
+
+Step 4: use Ansible in assistant_server set up nginx_server and config gninx with map_program_server's IP
+scripts: conf_nginx.sh
+
+Step 5: use Ansible in assistant_server update those two map_program_server with their IPs
+scripts: update.sh

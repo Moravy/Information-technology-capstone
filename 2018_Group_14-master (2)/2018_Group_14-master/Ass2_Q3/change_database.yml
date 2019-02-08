@@ -1,0 +1,72 @@
+# change_database.yml
+#
+# Authors: Daming Li   (Massey ID: 15398736, Email: ldm2264@gmail.com, @Damming github.com)
+#          Moravy Oum  (Massey ID: 16859528 , Email: moravy22@gmail.com , @Moravy github.com)
+#          Yaozu zhang   (Massey ID: 15398302, Email: 1264453650@qq.com, @shadoade github.com)
+#          Simon Freeman (Massey ID: 13036748, Email: freeman.simon@rocketmail.com, @Simon3man github.com)
+#
+# Create time: 4/Oct./2018
+#
+# Homepage: https://github.com/Damming/2018_Group_14
+# License: https://raw.githubusercontent.com/Damming/2018_Group_14/master/License.txt?token=AZvMHA8ak_65kW9KyjSlAd5-8o7vGDw_ks5bg8pGwA%3D%3D
+#
+# Description: Configure map program servers to access new database
+# 
+# System required: Ubuntu Server 18.04
+#
+# Run: ansible-playbook change_database.yml (on assistant server)
+
+
+
+# beginning of the script
+
+---
+  - name: change database server
+    hosts: map_server
+    remote_user: ubuntu
+    gather_facts: True
+    become_user: root
+    become: true
+
+    vars:
+      db_user: postgres
+      db_name: gis
+      db_password: postgres_007%
+      database_ip: %actual_ip% 
+      #Need to change the actual IP of the new database server.
+
+    tasks:
+
+      - name: delete old style.xml
+        become: yes
+        shell: rm style.xml
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+
+      - name: generate new style.x,l
+        shell: carto -a "3.0.20" project.mml > style.xml
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+          
+      - name: editing
+        become: yes
+        shell: sed -i 's|<Datasource>|<Datasource><Parameter name="type">postgis</Parameter><Parameter name="host">{{ database_ip }}</Parameter><Parameter name="dbname">gis</Parameter><Parameter name="user">postgres</Parameter><Parameter name="password">postgres_007%</Parameter>|' /home/ubuntu/src/openstreetmap-carto/style.xml
+      
+      - name: delete old .pgpass
+        shell: rm .pgpass
+        args:
+          chdir: /home/ubuntu
+      
+      - name: generate new .pgpass
+        copy:
+          content: '{{ database_ip }}:5432:*:postgres:postgres_007%'
+          dest: /home/ubuntu/.pgpass
+          mode: 0600
+
+      - name: Configure rendered
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: default
+          option: HOST
+          value: "{{ database_ip }}"
