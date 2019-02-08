@@ -1,0 +1,844 @@
+# prepared_new_instance.yml
+#
+# Authors: Daming Li   (Massey ID: 15398736, Email: ldm2264@gmail.com, @Damming github.com)
+#          Moravy Oum  (Massey ID: 16859528 , Email: moravy22@gmail.com , @Moravy github.com)
+#          Yaozu zhang   (Massey ID: 15398302, Email: 1264453650@qq.com, @shadoade github.com)
+#          Simon Freeman (Massey ID: 13036748, Email: freeman.simon@rocketmail.com, @Simon3man github.com)
+#
+# Create time: 01/Aug./2018
+#
+# Homepage: https://github.com/Damming/2018_Group_14
+# License: https://raw.githubusercontent.com/Damming/2018_Group_14/master/License.txt?token=AZvMHA8ak_65kW9KyjSlAd5-8o7vGDw_ks5bg8pGwA%3D%3D
+#
+# Description: Create an AWS key pair and an AWS EC2 Instance using that key pair. Install all required libraries and turn a blanck Ubuntu Server (the new instance) to an OpenStreetMap Server
+# 
+# System required: Ubuntu Server 18.04
+#
+# Run: ansible-playbook prepared_new_instance.yml
+
+
+
+# beginning of the script
+
+---
+  - name: Provision an EC2 Instance
+    hosts: local
+    connection: local
+    gather_facts: False
+    tags: provisioning
+    # Necessary Variables for creating/provisioning the EC2 Instance
+    vars:
+      instance_type: t2.micro
+      security_group: ansibleGroup # Change the security group name here
+      image: ami-702d7f08 # .NET Core 2.1 with Ubuntu Server 18.04 - Version 1.0
+      keypair: keypairForAnsible # This is one of my keys that i already have in AWS
+      region: us-west-2 # Change the Region
+      volumes:
+       - device_name: /dev/sda1
+         volume_size: 30
+      count: 1
+
+    # Task that will be used to Launch/Create an EC2 Instance
+    tasks:
+
+      - name: Create a new EC2 key
+        ec2_key:
+          name: keypairForAnsible
+          region: "{{ region }}"
+        register: ec2_key_result
+
+      - name: Save private key
+        copy: content="{{ ec2_key_result.key.private_key }}" dest="~/.ssh/keypairForAnsible.pem" mode=0600
+        when: ec2_key_result.changed
+
+      - name: Create a security group
+        local_action: 
+          module: ec2_group
+          name: "{{ security_group }}"
+          description: Security Group for webserver Servers
+          region: "{{ region }}"
+          rules:
+            # HTTP
+            - proto: tcp
+              from_port: 80
+              to_port: 80
+              cidr_ip: 0.0.0.0/0
+
+            # PostgreSQL
+            - proto: tcp
+              from_port: 5432
+              to_port: 5432
+              cidr_ip: 127.0.0.1/32
+
+            # SSH
+            - proto: tcp
+              from_port: 22
+              to_port: 22
+              cidr_ip: 0.0.0.0/0
+
+            # HTTPS
+            - proto: tcp
+              from_port: 443
+              to_port: 443
+              cidr_ip: 0.0.0.0/0
+          rules_egress:
+            - proto: all
+              cidr_ip: 0.0.0.0/0
+        register: basic_firewall
+
+      - name: Launch the new EC2 Instance
+        local_action: ec2
+                      group={{ security_group }}
+                      instance_type={{ instance_type}}
+                      image={{ image }}
+                      wait=true
+                      region={{ region }}
+                      keypair={{ keypair }}
+                      volumes={{ volumes }}
+                      count={{count}}
+        register: ec2
+
+      - name: Add the newly created EC2 instance(s) to the local host group (located inside the directory)
+        local_action: lineinfile
+                      dest="./hosts"
+                      regexp={{ item.public_ip }}
+                      insertafter="[webserver]" line="{{ item.public_ip }} ansible_python_interpreter=/usr/bin/python3"
+        with_items: "{{ ec2.instances }}"
+
+      - name: Wait for SSH to come up
+        local_action: wait_for
+                      host={{ item.public_ip }}
+                      port=22
+                      state=started
+        with_items: "{{ ec2.instances }}"
+
+      - name: Add tag to Instance(s)
+        local_action: ec2_tag resource={{ item.id }} region={{ region }} state=present
+        with_items: "{{ ec2.instances }}"
+        args:
+          tags:
+            Name: webserver
+
+      - name: Refresh hosts file
+        meta: refresh_inventory
+
+      - wait_for: delay=5
+
+  - name: install openstreetmap
+    hosts: webserver
+    remote_user: ubuntu
+    gather_facts: True
+    become_user: root
+    become: true
+    tags: provisioning
+
+    vars:
+      db_user: postgres
+      db_name: gis
+      db_password: postgres_007%
+
+    tasks:
+
+      - name: Update Ubuntu & Install essential tools
+        become: yes
+        apt: 
+          name: "{{ packages }}"
+          state: latest
+          update_cache: yes
+        vars:
+          packages:
+            - ca-certificates
+            - curl
+            - unzip
+            - gdal-bin
+            - tar
+            - wget
+            - bzip2
+            - build-essential
+            - clang
+            - python-psycopg2
+            - python3-psycopg2
+      
+      # ---------------- Yaozu Part ----------------
+
+      # Set the en_GB locale
+      - name: generate language
+        become: yes
+        shell: locale-gen en_GB en_GB.UTF-8
+
+      - name: set LANG
+        become: yes
+        shell: update-locale LANG='en_GB.UTF-8'
+
+      - name: set LANGUAGE
+        become: yes
+        shell: update-locale LANGUAGE='en_GB.UTF-8'
+
+      - name: set LC_ALL
+        become: yes
+        shell: update-locale LC_ALL='en_GB.UTF-8'
+
+      - name: reload locale
+        shell: . /etc/default/locale
+
+      - name: Install git
+        become: yes
+        apt:
+          name: git
+          state: latest
+       
+      # Update Freetype6
+      - name: add repository
+        become: true
+        apt_repository: 
+          repo: ppa:no1wantdthisname/ppa
+          state: present
+
+      - name: Install libfreetype6 & libfreetype6-dev
+        become: yes
+        apt: 
+          name: "{{ packages }}"
+          state: latest
+          update_cache: yes
+        vars:
+          packages:
+            - libfreetype6
+            - libfreetype6-dev
+
+      - name: Install Mapnik from the standard Ubuntu repository
+        become: yes
+        apt: 
+          name: "{{ packages }}"
+          state: latest
+        vars:
+          packages:
+            - git
+            - autoconf
+            - libtool
+            - libxml2-dev
+            - libbz2-dev
+            - libgeos-dev
+            - libgeos++-dev
+            - libproj-dev 
+            - gdal-bin 
+            - libgdal-dev 
+            - g++
+            - libmapnik-dev 
+            - mapnik-utils 
+            - python-mapnik
+
+      - name: Install Apache HTTP Server
+        become: yes
+        apt: 
+          name: "{{ packages }}"
+          state: latest
+        vars:
+          packages:
+            - apache2 
+            - apache2-dev
+
+      # Install Mod_tile from source
+      - name: Install necessary packages
+        become: yes
+        apt: 
+          name: "{{ packages }}"
+          state: latest
+        vars:
+          packages:
+            - autoconf 
+            - autogen 
+            - libmapnik3.0
+
+      - name: make directory
+        file:
+          path: /home/ubuntu/src
+          state: directory
+          
+      - name: git clone
+        git:
+          repo: 'https://github.com/openstreetmap/mod_tile.git'
+          clone: yes
+          dest: /home/ubuntu/src/mod_tile
+        
+      - name: autogen and config
+        shell: ./autogen.sh
+        args:
+          chdir: /home/ubuntu/src/mod_tile 
+        
+      - name: Configure mod_tile.
+        shell: ./configure
+        args:
+          chdir: /home/ubuntu/src/mod_tile
+        
+      - name: make mod_tile
+        shell: make
+        args:
+          chdir: /home/ubuntu/src/mod_tile 
+        
+      - name: make install
+        become: yes
+        shell: make install
+        args:
+          chdir: /home/ubuntu/src/mod_tile
+        
+      - name: make install (2)
+        become: yes
+        shell: make install-mod_tile
+        args:
+          chdir: /home/ubuntu/src/mod_tile  
+        
+      - name: make install (3)
+        become: yes
+        shell: ldconfig
+        args:
+          chdir: /home/ubuntu/src/mod_tile  
+        
+        
+      # Install Yaml and Package Manager for Python
+      - name: Install Yaml and Package Manager for Python & Mapnik Utilities
+        become: yes
+        apt: 
+          name: "{{ packages }}"
+          state: latest
+        vars:
+          packages:
+            - python-yaml
+            - python-pip
+            - mapnik-utils
+
+      - name: Install openstreetmap-carto
+        git:
+          repo: 'https://github.com/gravitystorm/openstreetmap-carto.git'
+          clone: yes
+          dest: /home/ubuntu/src/openstreetmap-carto
+
+      # Install the fonts needed by openstreetmap-carto
+      - name: Install font tools
+        become: yes
+        apt: 
+          name: "{{ packages }}"
+          state: latest
+        vars:
+          packages:
+            - fonts-noto-cjk 
+            - fonts-noto-hinted 
+            - fonts-noto-unhinted 
+            - fonts-hanazono 
+            - ttf-unifont
+            
+      - name: git noto emoji
+        git:
+          dest: /home/ubuntu/src/noto-emoji
+          clone: yes
+          repo: 'https://github.com/googlei18n/noto-emoji.git'
+       
+      - name: git noto font
+        git:
+          dest: /home/ubuntu/src/noto-fonts
+          clone: yes
+          repo: 'https://github.com/googlei18n/noto-fonts.git'
+
+      # Install the fonts needed by openstreetmap-carto
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-emoji/fonts/NotoColorEmoji.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-emoji/fonts/NotoEmoji-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansArabicUI-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoNaskhArabicUI-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansArabicUI-Bold.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoNaskhArabicUI-Bold.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansAdlam-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansAdlamUnjoined-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansChakma-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansOsage-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansSinhalaUI-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansArabicUI-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansCherokee-Bold.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansSinhalaUI-Bold.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansSymbols-Bold.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/hinted/NotoSansArabicUI-Bold.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+      - copy:
+          remote_src: yes
+          src: /home/ubuntu/src/noto-fonts/unhinted/NotoSansSymbols2-Regular.ttf
+          dest: /usr/share/fonts/truetype/noto
+        become: yes
+
+      - name: Install fontconfig
+        become: yes
+        apt:
+          name: fontconfig
+          state: latest
+
+      - name: fc-list
+        shell: fc-list
+        
+      # Install old unifont Medium font (just removes the warning)
+      - name: make directory
+        file: 
+          path: /home/ubuntu/src/OldUnifont 
+          state: directory
+            
+      - name: get debian
+        get_url: 
+          url: http://http.debian.net/debian/pool/main/u/unifont/unifont_5.1.20080914.orig.tar.gz
+          dest: /home/ubuntu/src/OldUnifont
+      
+      - name: unzipping file
+        shell: tar xvfz unifont_5.1.20080914.orig.tar.gz unifont-5.1.20080914/font/precompiled/unifont.ttf
+        args:
+          chdir: /home/ubuntu/src/OldUnifont
+          warn: no
+            
+      - name: copying file
+        become: yes
+        copy:
+          remote_src: yes
+          src: /home/ubuntu/src/OldUnifont/unifont-5.1.20080914/font/precompiled/unifont.ttf
+          dest: /usr/share/fonts/truetype/unifont/OldUnifont.ttf
+
+      # Create the data folder
+      - name: Run script
+        shell: scripts/get-shapefiles.py
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+          
+      - name: Download Node.js setup script
+        shell: curl -sL https://deb.nodesource.com/setup_6.x | sudo -E bash - && sudo apt-get install -y nodejs
+        args:
+          warn: no
+            
+      - name: install node.js
+        become: yes
+        apt: 
+          name: npm
+          state: latest
+      
+      - name: install lest verion 0 of carto
+        become: yes
+        shell: npm install -g carto@0
+        
+      # Install mapnik-reference
+      - name: install mapnik
+        shell: npm install mapnik-reference
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+            
+      - name: install mapnik (2)
+        shell: node -e "console.log(require('mapnik-reference'))"
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+        
+      - name: test and produce carto
+        shell: carto -a "3.0.20" project.mml > style.xml
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+        
+      - name: test
+        shell: ls -l /home/ubuntu/src/openstreetmap-carto/style.xml
+      
+      - name: Install PostgreSQL
+        become: yes
+        apt: 
+          name: "{{ item }}"
+          state: latest
+          update_cache: yes
+        with_items:
+          - postgresql
+          - postgis
+          - pgadmin3
+          - postgresql-contrib
+        
+      # Set the password for the postgres user
+      - name: create a file
+        copy:
+          content: 'localhost:5432:*:postgres:postgres_007%'
+          dest: /home/ubuntu/.pgpass
+          mode: 0600
+        
+      - name: trust
+        become: yes
+        shell: sed -i 's|peer|trust|' /etc/postgresql/10/main/pg_hba.conf
+        args:
+          warn: no
+            
+      - name: trust (2)
+        become: yes
+        shell: sed -i 's|md5|trust|' /etc/postgresql/10/main/pg_hba.conf
+        args:
+          warn: no
+            
+      - name: restart postgresql
+        become: yes
+        service: 
+          name: postgresql 
+          state: restarted
+      
+      # ---------------- Moravy Part ----------------
+      
+      - name: postgis
+        become: yes
+        postgresql_db:
+          name: "{{ db_name }}"
+          encoding: "UTF-8"
+          lc_collate: "en_GB.utf8"
+          lc_ctype: "en_GB.utf8"
+          template: "template0"
+       
+      # Create the postgis and hstore extensions
+      - name: connect gis
+        shell: psql -U postgres -h localhost -c "\connect gis"
+        register: connect_gis
+        failed_when: connect_gis.rc != 1 and connect_gis.rc != 0
+      
+      - name: hstore extension
+        command: psql -U postgres -h localhost -d gis -c "CREATE EXTENSION {{ item }}"
+        with_items:
+          - postgis
+          - hstore
+
+      - name: Add a user and grant access to gis DB
+        postgresql_user:
+          db: "{{ db_name }}"
+          name: ubuntu
+          priv: ALL
+       
+      - name: Enabling remote access to PostgreSQL (1)
+        become: yes
+        lineinfile:
+          path: /etc/postgresql/10/main/pg_hba.conf
+          line: 'host all all 0.0.0.0/0 trust'
+            
+      - name: Enabling remote access to PostgreSQL (2)
+        become: yes
+        lineinfile:
+          path: /etc/postgresql/10/main/postgresql.conf
+          line: "listen_addresses = '*'"
+      
+      - name: restart postgresql
+        become: yes
+        service: 
+          name: postgresql
+          state: restarted
+      
+      - name: Tuning the database
+        become: yes
+        lineinfile:
+          path: /etc/postgresql/10/main/postgresql.conf
+          line: "{{ item }}"
+        with_items:
+          - 'shared_buffers = 128MB'
+          - 'min_wal_size = 80MB'
+          - 'max_wal_size = 1GB'
+          - 'work_mem = 4MB'
+          - 'maintenance_work_mem= 64MB'
+          - 'autovacuum = off'
+          - 'fsync = off'
+
+      - name: stop postgresql
+        become: yes
+        shell: /etc/init.d/postgresql stop
+
+      - name: start postgresql
+        become: yes
+        shell: /etc/init.d/postgresql start
+      
+      # Install Osm2pgsql
+      - name: add repository
+        become: yes
+        apt_repository: 
+          repo: ppa:osmadmins/ppa
+          update-cache: yes
+              
+      - name: add a key
+        shell: apt-key adv --keyserver keyserver.ubuntu.com --recv A438A16C88C6BE41CB1616B8D57F48750AC4F2CB
+        # apt_key:
+        #   keyserver: keyserver.ubuntu.com
+        #   id: A438A16C88C6BE41CB1616B8D57F48750AC4F2CB
+          
+      - name: install osm
+        become: yes
+        apt: 
+          name: osm2pgsql
+          state: latest
+          update_cache: yes
+      
+      - name: Get an OpenStreetMap data extract
+        get_url: url=https://raw.githubusercontent.com/Damming/MapData/master/Auckland.osm.pbf dest=/home/ubuntu/src/openstreetmap-carto
+       
+      # Load data to postgis
+      - name: Load data to postgis(1)
+        become: yes
+        sysctl:
+          name: vm.overcommit_memory
+          value: 1
+      
+      - name: Load data to postgis(2)
+        shell: osm2pgsql -s -C 300 -c -G --hstore --style openstreetmap-carto.style --tag-transform-script openstreetmap-carto.lua -d gis -H localhost -U postgres Auckland.osm.pbf
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+      
+      # Create indexes and grant users
+      - name: indexes and grantuser
+        shell: HOSTNAME=localhost
+       
+      - name: indexes
+        shell: scripts/indexes.py | psql -U postgres -h localhost -d gis
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+       
+      - name: grantuser(3)
+        get_url: url=https://raw.githubusercontent.com/openstreetmap/osm2pgsql/master/install-postgis-osm-user.sh dest=/home/ubuntu/src/openstreetmap-carto
+        
+      - name: grantuser(4)
+        file:  dest=/home/ubuntu/src/openstreetmap-carto/install-postgis-osm-user.sh mode=a+x
+       
+      - name: grantuser(5)
+        shell: ./install-postgis-osm-user.sh gis ubuntu
+        args:
+          chdir: /home/ubuntu/src/openstreetmap-carto
+         
+      # ---------------- Simon Part ----------------  
+
+      # Configure renderd
+      - name: Configure rendered(1) socketname
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: renderd
+          option: socketname
+          value: /var/run/renderd/renderd.sock
+
+      - name: Configure rendered(2) plugins_dir
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: mapnik
+          option: plugins_dir
+          value: /usr/lib/mapnik/3.0/input/
+
+      - name: Configure rendered(3) font_dir
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: mapnik
+          option: font_dir
+          value: /usr/share/fonts
+
+      - name: Configure rendered(4) font_dir_recurse
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: mapnik
+          option: font_dir_recurse
+          value: true
+
+      - name: Configure rendered(5) URI
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: default
+          option: URI
+          value: /osm_tiles/
+
+      - name: Configure rendered(6) XML
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: default
+          option: XML
+          value: /home/ubuntu/src/openstreetmap-carto/style.xml
+
+      - name: Configure rendered(7) HOST
+        become: yes
+        ini_file:
+          path: /usr/local/etc/renderd.conf
+          section: default
+          option: HOST
+          value: localhost
+
+      # ---------------- Overlap Part ---------------- 
+
+      # # Install renderd init script by copying the sample init script included in its package
+      - name: install renderd(1)
+        become: yes
+        copy:
+          remote_src: yes
+          src: /home/ubuntu/src/mod_tile/debian/renderd.init
+          dest: /etc/init.d/renderd
+          mode: a+x
+
+      # Edit the init script file
+      - name: Edit script(1)
+        become: yes
+        shell: sed -i -e '/DAEMON=/ s~=.*~= /usr/local/bin/$NAME~' /etc/init.d/renderd warn=False
+            
+      - name: Edit script(2)
+        become: yes
+        shell: sed -i -e '/DAEMON_ARGS=/ s~=.*~= "-c /usr/local/etc/renderd.conf"~' /etc/init.d/renderd warn=False
+            
+      - name: Edit script(3)
+        become: yes
+        shell: sed -i -e '/RUNASUSER=/ s~=.*~=ubuntu~' /etc/init.d/renderd warn=False
+
+      # Create directories for renderd and mod_tile
+      - name: creates directory for renderd
+        become: yes
+        file:
+          path: /var/run/renderd
+          state: directory
+          owner: ubuntu
+        
+      - name: creates directory for mod_tile
+        become: yes
+        file: 
+          path: /var/lib/mod_tile
+          state: directory
+          owner: ubuntu
+
+      - name: daemon reload
+        become: yes
+        shell: systemctl daemon-reload
+        
+      - name: start renderd
+        become: yes
+        shell: systemctl start renderd
+          
+      - name: enable renderd
+        become: yes
+        shell: systemctl enable renderd
+      
+      # ---------------- Moravy Part Again ---------------- 
+
+
+
+      # Configure Apache
+      - name: create file and write into item
+        become: yes
+        file: 
+          path: /etc/apache2/mods-available/mod_tile.load
+          state: touch
+          
+      - name: write into file
+        become: yes
+        lineinfile:
+          path: /etc/apache2/mods-available/mod_tile.load
+          line: LoadModule tile_module /usr/lib/apache2/modules/mod_tile.so
+              
+      - name: symlink
+        become: yes
+        shell: ln -s /etc/apache2/mods-available/mod_tile.load /etc/apache2/mods-enabled/ warn=False
+      
+      # Edit The default virtual host file
+      # - name: add more lines
+      #   become: yes
+      #   lineinfile:
+      #     dest: /etc/apache2/sites-enabled/000-default.conf
+      #     insertafter: '<VirtualHost *:80>'
+      #     state: present
+      #     line: "{{ item }}"
+      #   with_items:
+      #     - '        LoadTileConfigFile /usr/local/etc/renderd.conf'
+      #     - '        ModTileRenderdSocketName /var/run/renderd/renderd.sock'
+      #     - '        ModTileRequestTimeout 3'
+      #     - '        ModTileMissingRequestTimeout 60'
+      - name: Edit host file(1)
+        become: yes
+        shell: sed -i "2i\        LoadTileConfigFile /usr/local/etc/renderd.conf" /etc/apache2/sites-enabled/000-default.conf
+      
+      - name: Edit host file(2)
+        become: yes
+        shell: sed -i '3i\        ModTileRenderdSocketName /var/run/renderd/renderd.sock' /etc/apache2/sites-enabled/000-default.conf
+      
+      - name: Edit host file(3)
+        become: yes
+        shell: sed -i '4i\        ModTileRequestTimeout 3' /etc/apache2/sites-enabled/000-default.conf
+      
+      - name: Edit host file(4)
+        become: yes
+        shell: sed -i '5i\        ModTileMissingRequestTimeout 60' /etc/apache2/sites-enabled/000-default.conf
+        
+      # - name: restart apache2
+      #   script: systemctl restart apache2
+      #   tags:
+      #     name: Openstreetmap
+      
+      - name: restart apache2
+        service:
+          name: apache2
+          state: restarted
+       
+      - name: OpenLayers
+        become: yes
+        get_url: url=https://raw.githubusercontent.com/Damming/MapData/master/ol.html dest=/var/www/html/
+        
+      - name: Leaflet
+        become: yes
+        get_url: url=https://raw.githubusercontent.com/Damming/MapData/master/lf.html dest=/var/www/html/
+      
+      - name: Start renderd
+        service:
+          name: renderd
+          state: started
+        # shell: renderd -f -c /usr/local/etc/renderd.conf

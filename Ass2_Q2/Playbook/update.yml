@@ -1,0 +1,52 @@
+# update.yml
+#
+# Authors: Daming Li   (Massey ID: 15398736, Email: ldm2264@gmail.com, @Damming github.com)
+#          Moravy Oum  (Massey ID: 16859528 , Email: moravy22@gmail.com , @Moravy github.com)
+#          Yaozu zhang   (Massey ID: 15398302, Email: 1264453650@qq.com, @shadoade github.com)
+#          Simon Freeman (Massey ID: 13036748, Email: freeman.simon@rocketmail.com, @Simon3man github.com)
+#
+# Create time: 29/Sep./2018
+#
+# Homepage: https://github.com/Damming/2018_Group_14
+# License: https://raw.githubusercontent.com/Damming/2018_Group_14/master/License.txt?token=AZvMHA8ak_65kW9KyjSlAd5-8o7vGDw_ks5bg8pGwA%3D%3D
+#
+# Description: Update OpenStreetMap program server
+#              Run in assistant_server
+# 
+# System required: Ubuntu Server 18.04
+#
+# Run: ansible-playbook update.yml
+
+
+
+# beginning of the script
+
+---
+  - name: setup openstreetmap program server
+    hosts: map_server
+    # hosts: "{{ groups.map_server.0 }}"
+    remote_user: ubuntu
+    gather_facts: True
+    become_user: root
+    become: true
+
+    tasks:
+
+      - name: stop apache2
+        service:
+          name: apache2
+          state: stopped
+
+      - name: update(1)
+        file:
+          path: /var/www/html/ol.html
+          state: absent
+
+      - name: update(2)
+        become: yes
+        get_url: url=https://raw.githubusercontent.com/Damming/MapData/master/ol_new/ol.html dest=/var/www/html/
+
+      - name: start apache2
+        service:
+          name: apache2
+          state: started
